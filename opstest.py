@@ -11,6 +11,7 @@ import operator
 from luis_sdk import LUISClient
 from slackclient import SlackClient
 import sys
+import threading
 reload(sys)
 sys.setdefaultencoding('utf-8')
 
@@ -20,14 +21,14 @@ BOT_ID = os.environ.get("BOT_ID")
 AT_BOT = "<@" + BOT_ID + ">"
 # instantiate Slack & Twilio clients
 slack_client = SlackClient(os.environ.get('SLACK_BOT_TOKEN'))
-NONCE = int(random.random()*1000)
 SECRETID = os.environ.get('SECRETID')
 SECRETKEY = os.environ.get('SECRETKEY')
 REGION = "gz"
-TIMESTAMP = int(time.time())
 
 # translate chinese to english
 def get_trans(command):
+    NONCE = int(random.random() * 1000)
+    TIMESTAMP = int(time.time())
     sig = {
         'Action': 'TextTranslate',
         'Nonce': NONCE,
@@ -65,7 +66,7 @@ def get_trans(command):
         else:
             return command
     except Exception,e:
-        print "error:",e
+        print threading.current_thread().name, "translate error:", e
         return command
 
 
@@ -73,18 +74,18 @@ def handle_command(command, channel):
     qna_ans, qna_sco = qna_result(command)
     luis_ans, luis_sco, entities = luis_result(command)
     if (qna_sco > luis_sco and qna_ans != "None") or (qna_ans != "None" and luis_ans == "None"):
-        print "use qna answer"
+        print threading.current_thread().name, "use qna answer"
         slack_client.api_call("chat.postMessage", channel=channel,
                           text=qna_ans, as_user=True)
     elif qna_sco == luis_sco :
         slack_client.api_call("chat.postMessage", channel=channel,
                           text="Sorry, i can not understand", as_user=True)
     else:
-        print "use luis answer"
+        print threading.current_thread().name, "use luis answer"
         handle_luis(luis_ans, entities, channel)
 
 def handle_luis(luis_ans, entities, channel):
-    print "luis answer:", luis_ans, entities
+    print threading.current_thread().name, "luis answer:", luis_ans, entities
     if luis_ans == 'kibana':
         if len(entities):
             for entity in entities:
@@ -97,18 +98,18 @@ def handle_luis(luis_ans, entities, channel):
                                           text='''Make sure you connect staging vpn,and then click: http://stag.k.llsops.com/''',
                                           as_user=True)
                 else:
-                    print "entity:", entity
+                    print threading.current_thread().name, "entity:", entity
                     slack_client.api_call("chat.postMessage", channel=channel,
                                           text='''Make sure you connect staging vpn,and then click: http://stag.k.llsops.com/''',
                                          as_user=True)
         else:
-            print "no entity"
+            print threading.current_thread().name, "no entity"
             slack_client.api_call("chat.postMessage", channel=channel,
                                   text='''Make sure you connect staging vpn,and then click: http://stag.k.llsops.com/''',
                                   as_user=True)
     elif luis_ans == 'BookFlight':
         for entity in entities:
-            print entity.get_name
+            print threading.current_thread().name, entity.get_name
             slack_client.api_call("chat.postMessage", channel=channel,
                                   text='''bookflight test''',
                                   as_user=True)
@@ -130,8 +131,8 @@ def qna_result(question):
             if answer["score"] > score:
                 score = answer["score"]
                 text = answer["answer"]
-        print "question:", question
-        print "qna result:", text, score
+        print threading.current_thread().name, "question:", question
+        print threading.current_thread().name, "qna result:", text, score
         return text, float(score)
     else:
         return "None", 0
@@ -143,31 +144,11 @@ def luis_result(question):
         text = question
         client = LUISClient(appid, appkey, True)
         res = client.predict(text)
-        print "luis result:", res.get_top_intent().get_name(), float(res.get_top_intent().get_score()) * 100, res.get_entities()
+        print threading.current_thread().name, "luis result:", res.get_top_intent().get_name(), float(res.get_top_intent().get_score()) * 100, res.get_entities()
         return res.get_top_intent().get_name(), float(res.get_top_intent().get_score()) * 100, res.get_entities()
     except Exception, exc:
-        print(exc)
+        print threading.current_thread().name, "luis get result error:", exc
         return "None", 0, None
-
-def process_res(res):
-    print(u'Query: ' + res.get_query())
-    print(u'Top Scoring Intent: ' + res.get_top_intent().get_name())
-    if res.get_dialog() is not None:
-        if res.get_dialog().get_prompt() is None:
-            print(u'Dialog Prompt: None')
-        else:
-            print(u'Dialog Prompt: ' + res.get_dialog().get_prompt())
-        if res.get_dialog().get_parameter_name() is None:
-            print(u'Dialog Parameter: None')
-        else:
-            print('Dialog Parameter Name: ' + res.get_dialog().get_parameter_name())
-        print(u'Dialog Status: ' + res.get_dialog().get_status())
-    print(u'Entities:')
-    for entity in res.get_entities():
-        print(u'"%s":' % entity.get_name())
-        print(u'Type: %s, Score: %s' % (entity.get_type(), entity.get_score()))
-
-
 
 def parse_slack_output(slack_rtm_output):
     """
@@ -185,17 +166,21 @@ def parse_slack_output(slack_rtm_output):
     return None, None
 
 
+def process_command(command, channel):
+    print '---------------------------'
+    print threading.current_thread().name, 'Origin Question:', command
+    command = get_trans(command)
+    handle_command(command, channel)
+
 if __name__ == "__main__":
-    READ_WEBSOCKET_DELAY = 1 # 1 second delay between reading from firehose
+    READ_WEBSOCKET_DELAY = 0.5 # 1 second delay between reading from firehose
     if slack_client.rtm_connect(with_team_state=True):
         print("StarterBot connected and running!")
         while True:
             command, channel = parse_slack_output(slack_client.rtm_read())
             if command and channel:
-                print '---------------------------'
-                print 'Origin Question:', command
-                command = get_trans(command)
-                handle_command(command, channel)
+                t = threading.Thread(target=process_command, args=(command,channel))
+                t.start()
             time.sleep(READ_WEBSOCKET_DELAY)
     else:
         print("Connection failed. Invalid Slack token or bot ID?")
